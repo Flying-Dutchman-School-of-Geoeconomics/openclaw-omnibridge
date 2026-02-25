@@ -2,7 +2,7 @@ import "reflect-metadata";
 import { Module } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { NestFastifyApplication, FastifyAdapter } from "@nestjs/platform-fastify";
-import rawBody from "@fastify/raw-body";
+import rawBody from "fastify-raw-body";
 import { createBridgeRuntime } from "../../runtime.js";
 import { OmniBridgeIngressModule } from "./module.js";
 
