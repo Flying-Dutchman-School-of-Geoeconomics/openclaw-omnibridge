@@ -14,7 +14,7 @@ import { FastifyReply, FastifyRequest } from "fastify";
 import { IngressService } from "./ingress.service.js";
 
 interface RawBodyRequest extends FastifyRequest {
-  rawBody?: string;
+  rawBody?: string | Buffer;
 }
 
 @Controller("webhooks")
@@ -22,11 +22,13 @@ export class WebhooksController {
   constructor(private readonly ingress: IngressService) {}
 
   private requireRawBody(req: RawBodyRequest): string {
-    if (typeof req.rawBody !== "string") {
-      throw new BadRequestException("raw body unavailable; check raw-body middleware setup");
+    if (typeof req.rawBody === "string") {
+      return req.rawBody;
     }
-
-    return req.rawBody;
+    if (Buffer.isBuffer(req.rawBody)) {
+      return req.rawBody.toString("utf8");
+    }
+    throw new BadRequestException("raw body unavailable; check raw-body middleware setup");
   }
 
   @Post("telegram")

@@ -17,12 +17,14 @@ const toHeaderMap = (headers: Record<string, string | string[] | undefined>): Re
   return out;
 };
 
-const requireRawBody = (rawBodyValue: string | undefined): string => {
-  if (typeof rawBodyValue !== "string") {
-    throw new Error("raw body unavailable; check raw-body middleware setup");
+const requireRawBody = (rawBodyValue: string | Buffer | undefined): string => {
+  if (typeof rawBodyValue === "string") {
+    return rawBodyValue;
   }
-
-  return rawBodyValue;
+  if (Buffer.isBuffer(rawBodyValue)) {
+    return rawBodyValue.toString("utf8");
+  }
+  throw new Error("raw body unavailable; check raw-body middleware setup");
 };
 
 export const createFastifyIngress = async (runtime: BridgeRuntime): Promise<FastifyInstance> => {

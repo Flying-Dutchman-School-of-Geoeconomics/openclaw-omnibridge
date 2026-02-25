@@ -1,11 +1,25 @@
-import type { RedisClientType } from "redis";
 import { IdempotencyStore, RateLimiter, ReplayStore } from "./types.js";
 
 const secondsFromMs = (ttlMs: number): number => Math.max(1, Math.ceil(ttlMs / 1000));
 
+interface RedisKvClient {
+  exists(key: string): Promise<number>;
+  set(
+    key: string,
+    value: string,
+    options?: {
+      EX?: number;
+      PX?: number;
+      NX?: boolean;
+    },
+  ): Promise<string | null>;
+  incr(key: string): Promise<number>;
+  expire(key: string, seconds: number): Promise<number>;
+}
+
 export class RedisIdempotencyStore implements IdempotencyStore {
   constructor(
-    private readonly client: RedisClientType,
+    private readonly client: RedisKvClient,
     private readonly keyPrefix: string,
     private readonly ttlMs: number,
   ) {}
@@ -25,7 +39,7 @@ export class RedisIdempotencyStore implements IdempotencyStore {
 
 export class RedisReplayStore implements ReplayStore {
   constructor(
-    private readonly client: RedisClientType,
+    private readonly client: RedisKvClient,
     private readonly keyPrefix: string,
   ) {}
 
@@ -41,7 +55,7 @@ export class RedisReplayStore implements ReplayStore {
 
 export class RedisSlidingWindowRateLimiter implements RateLimiter {
   constructor(
-    private readonly client: RedisClientType,
+    private readonly client: RedisKvClient,
     private readonly keyPrefix: string,
     private readonly perMinute: number,
   ) {}
@@ -50,11 +64,9 @@ export class RedisSlidingWindowRateLimiter implements RateLimiter {
     const window = Math.floor(nowMs / 60_000);
     const redisKey = `${this.keyPrefix}:ratelimit:${subject}:${window}`;
     const count = await this.client.incr(redisKey);
-
     if (count === 1) {
       await this.client.expire(redisKey, 61);
     }
-
     return count <= this.perMinute;
   }
 }

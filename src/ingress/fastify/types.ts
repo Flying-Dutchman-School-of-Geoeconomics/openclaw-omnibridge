@@ -2,6 +2,6 @@ import "fastify";
 
 declare module "fastify" {
   interface FastifyRequest {
-    rawBody?: string;
+    rawBody?: string | Buffer;
   }
 }

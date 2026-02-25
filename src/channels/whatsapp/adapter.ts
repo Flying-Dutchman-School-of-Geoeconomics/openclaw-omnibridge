@@ -1,5 +1,11 @@
 import { BaseInboundAdapter } from "../base.js";
-import { OutboundMessage, RawInboundMessage, VerificationResult } from "../../core/types.js";
+import {
+  CanonicalMessage,
+  MessageKind,
+  OutboundMessage,
+  RawInboundMessage,
+  VerificationResult,
+} from "../../core/types.js";
 import { verifyWhatsAppWebhookSignature } from "../../crypto/verifiers.js";
 import { WhatsAppApiClient } from "./api-client.js";
 
@@ -74,18 +80,18 @@ export class WhatsAppAdapter extends BaseInboundAdapter {
     return verification;
   }
 
-  async normalize(raw: RawInboundMessage, verification: VerificationResult) {
+  async normalize(raw: RawInboundMessage, verification: VerificationResult): Promise<CanonicalMessage> {
     const command = raw.payload.startsWith("/") ? raw.payload.slice(1).split(/\s+/) : null;
-
+    const kind: MessageKind = raw.contentType === "audio/ogg" ? "audio" : command ? "command" : "text";
     return {
       messageId: raw.id,
       sourceChannel: this.kind,
       sourceSenderId: raw.senderId,
       sourceConversationId: raw.conversationId,
       createdAtMs: raw.timestampMs,
-      kind: raw.contentType === "audio/ogg" ? "audio" : command ? "command" : "text",
-      text: raw.contentType === "text/plain" && !command ? raw.payload : undefined,
-      audioUrl: raw.contentType === "audio/ogg" ? raw.payload : undefined,
+      kind,
+      text: kind === "text" ? raw.payload : undefined,
+      audioUrl: kind === "audio" ? raw.payload : undefined,
       commandName: command?.[0],
       commandArgs: command?.slice(1),
       metadata: raw.metadata,

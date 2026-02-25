@@ -1,5 +1,11 @@
 import { BaseInboundAdapter } from "../base.js";
-import { OutboundMessage, RawInboundMessage, VerificationResult } from "../../core/types.js";
+import {
+  CanonicalMessage,
+  MessageKind,
+  OutboundMessage,
+  RawInboundMessage,
+  VerificationResult,
+} from "../../core/types.js";
 import { verifyDiscordEd25519Signature } from "../../crypto/verifiers.js";
 import { DiscordApiClient } from "./api-client.js";
 
@@ -72,16 +78,16 @@ export class DiscordAdapter extends BaseInboundAdapter {
     return verification;
   }
 
-  async normalize(raw: RawInboundMessage, verification: VerificationResult) {
+  async normalize(raw: RawInboundMessage, verification: VerificationResult): Promise<CanonicalMessage> {
     const command = raw.payload.startsWith("/") ? raw.payload.slice(1).split(/\s+/) : null;
-
+    const kind: MessageKind = command ? "command" : "text";
     return {
       messageId: raw.id,
       sourceChannel: this.kind,
       sourceSenderId: raw.senderId,
       sourceConversationId: raw.conversationId,
       createdAtMs: raw.timestampMs,
-      kind: command ? "command" : "text",
+      kind,
       text: command ? undefined : raw.payload,
       commandName: command?.[0],
       commandArgs: command?.slice(1),
