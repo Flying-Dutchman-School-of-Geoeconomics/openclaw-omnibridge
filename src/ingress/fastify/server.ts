@@ -1,5 +1,5 @@
 import Fastify, { FastifyInstance } from "fastify";
-import rawBody from "@fastify/raw-body";
+import rawBody from "fastify-raw-body";
 import { BridgeRuntime } from "../../runtime.js";
 import { SignalAdapter } from "../../channels/signal/adapter.js";
 import { EmailAdapter } from "../../channels/email/adapter.js";
