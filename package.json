@@ -21,7 +21,7 @@
   },
   "dependencies": {
     "@waku/sdk": "^0.0.31",
-    "@fastify/raw-body": "^5.0.0",
+    "fastify-raw-body": "^5.0.0",
     "@nestjs/common": "^11.1.0",
     "@nestjs/core": "^11.1.0",
     "@nestjs/platform-fastify": "^11.1.0",
