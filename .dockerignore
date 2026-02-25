@@ -1,0 +1,11 @@
+.git
+.gitignore
+node_modules
+dist
+coverage
+var
+tmp
+*.log
+.DS_Store
+README.md
+openclaw-status-integration

@@ -1,0 +1,54 @@
+{
+  "rules": [
+    {
+      "sourceChannel": "status",
+      "requireAuthentication": true,
+      "allowedSenders": ["0xsender1", "0xsender2"],
+      "allowedCommands": ["help", "status", "ping"],
+      "maxPayloadBytes": 32768,
+      "fanoutTargets": ["telegram", "discord", "slack", "email"]
+    },
+    {
+      "sourceChannel": "whatsapp",
+      "requireAuthentication": true,
+      "allowedSenders": ["15550001111"],
+      "allowedCommands": ["help", "status"],
+      "maxPayloadBytes": 16384,
+      "fanoutTargets": ["status", "slack", "email"]
+    },
+    {
+      "sourceChannel": "telegram",
+      "requireAuthentication": true,
+      "allowedCommands": ["help", "status"],
+      "maxPayloadBytes": 16384,
+      "fanoutTargets": ["status", "discord", "email"]
+    },
+    {
+      "sourceChannel": "signal",
+      "requireAuthentication": true,
+      "maxPayloadBytes": 16384,
+      "fanoutTargets": ["status", "slack", "email"]
+    },
+    {
+      "sourceChannel": "discord",
+      "requireAuthentication": true,
+      "allowedCommands": ["help", "status", "deploy"],
+      "maxPayloadBytes": 16384,
+      "fanoutTargets": ["status", "slack", "email"]
+    },
+    {
+      "sourceChannel": "slack",
+      "requireAuthentication": true,
+      "allowedCommands": ["help", "status", "deploy"],
+      "maxPayloadBytes": 16384,
+      "fanoutTargets": ["status", "discord", "email"]
+    },
+    {
+      "sourceChannel": "email",
+      "requireAuthentication": true,
+      "allowedSenders": ["ops@example.com"],
+      "maxPayloadBytes": 65536,
+      "fanoutTargets": ["status", "slack", "discord"]
+    }
+  ]
+}

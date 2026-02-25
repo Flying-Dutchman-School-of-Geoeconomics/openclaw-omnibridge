@@ -1,0 +1,133 @@
+version: "3.8"
+
+services:
+  openclaw-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: tester
+    image: openclaw-omnibridge:tester
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: test
+      OPENCLAW_ENV: test
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-test-token}
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      STORE_BACKEND: ${STORE_BACKEND:-memory}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+    command: ["npm", "test"]
+    volumes:
+      - ./var:/app/var
+      - openclaw-data:/root/.openclaw
+    depends_on:
+      ollama:
+        condition: service_started
+      ollama-puller:
+        condition: service_completed_successfully
+    shm_size: "2gb"
+    mem_limit: "2g"
+    cpus: "1.50"
+    networks:
+      - openclaw-net
+
+  openclaw-fastify:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runner
+    image: openclaw-omnibridge:runner
+    profiles: ["app"]
+    env_file:
+      - .env
+    environment:
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      STORE_BACKEND: ${STORE_BACKEND:-memory}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+    ports:
+      - "${OPENCLAW_HTTP_PORT:-8080}:8080"
+    depends_on:
+      ollama:
+        condition: service_started
+    shm_size: "1gb"
+    networks:
+      - openclaw-net
+
+  openclaw-nest:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runner
+    image: openclaw-omnibridge:runner
+    profiles: ["nest"]
+    env_file:
+      - .env
+    environment:
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      STORE_BACKEND: ${STORE_BACKEND:-memory}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+    command: ["node", "dist/src/ingress/nest/main.js"]
+    ports:
+      - "${OPENCLAW_HTTP_PORT:-8080}:8080"
+    depends_on:
+      ollama:
+        condition: service_started
+    shm_size: "1gb"
+    networks:
+      - openclaw-net
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: openclaw-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks:
+      - openclaw-net
+
+  ollama-puller:
+    image: curlimages/curl:8.11.1
+    container_name: openclaw-ollama-puller
+    depends_on:
+      ollama:
+        condition: service_healthy
+    command:
+      - sh
+      - -c
+      - |
+        curl -sS -X POST http://ollama:11434/api/pull \
+          -H 'content-type: application/json' \
+          -d '{"name":"${OLLAMA_MODEL:-qwen2.5:7b-instruct}"}'
+    restart: "no"
+    networks:
+      - openclaw-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: openclaw-redis
+    profiles: ["infra"]
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    networks:
+      - openclaw-net
+
+networks:
+  openclaw-net:
+    driver: bridge
+
+volumes:
+  openclaw-data:
+  ollama-models:
+  redis-data:
