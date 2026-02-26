@@ -5,6 +5,7 @@ import {
   RedisIdempotencyStore,
   RedisReplayStore,
   RedisSlidingWindowRateLimiter,
+  type RedisKvClient,
 } from "../../src/core/redis-stores.js";
 
 const redisUrl = process.env.REDIS_URL;
@@ -17,9 +18,11 @@ if (!redisUrl) {
     const client = createClient({ url: redisUrl });
     await client.connect();
 
-    const replayStore = new RedisReplayStore(client, keyPrefix);
-    const idempotencyStore = new RedisIdempotencyStore(client, keyPrefix, 5_000);
-    const rateLimiter = new RedisSlidingWindowRateLimiter(client, keyPrefix, 2);
+    const kvClient = client as unknown as RedisKvClient;
+
+    const replayStore = new RedisReplayStore(kvClient, keyPrefix);
+    const idempotencyStore = new RedisIdempotencyStore(kvClient, keyPrefix, 5_000);
+    const rateLimiter = new RedisSlidingWindowRateLimiter(kvClient, keyPrefix, 2);
 
     const first = await replayStore.markIfNew("nonce-1", 10_000);
     const second = await replayStore.markIfNew("nonce-1", 10_000);

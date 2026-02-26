@@ -2,7 +2,7 @@ import { IdempotencyStore, RateLimiter, ReplayStore } from "./types.js";
 
 const secondsFromMs = (ttlMs: number): number => Math.max(1, Math.ceil(ttlMs / 1000));
 
-interface RedisKvClient {
+export interface RedisKvClient {
   exists(key: string): Promise<number>;
   set(
     key: string,
