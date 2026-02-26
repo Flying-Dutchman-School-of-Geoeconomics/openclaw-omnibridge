@@ -70,4 +70,4 @@ jobs:
           java-version: "17"
 
       - name: Run TLC
-        run: ./scripts/run-tlc.sh
+        run: bash ./scripts/run-tlc.sh
