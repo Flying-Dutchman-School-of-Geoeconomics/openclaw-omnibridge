@@ -14,5 +14,5 @@ if [[ ! -f "$TLA_JAR" ]]; then
 fi
 
 java -cp "$TLA_JAR" tlc2.TLC \
-  -config "$ROOT_DIR/specs/formal/MC_BRIDGE_INVARIANTS.cfg" \
-  "$ROOT_DIR/specs/formal/MC_BRIDGE_INVARIANTS.tla"
+  -config "$ROOT_DIR/specs/formal/BRIDGE_INVARIANTS.cfg" \
+  "$ROOT_DIR/specs/formal/BRIDGE_INVARIANTS.tla"
