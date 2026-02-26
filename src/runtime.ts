@@ -19,7 +19,9 @@ import {
   RedisIdempotencyStore,
   RedisReplayStore,
   RedisSlidingWindowRateLimiter,
+  type RedisKvClient,
 } from "./core/redis-stores.js";
+import { IdempotencyStore, RateLimiter, ReplayStore } from "./core/types.js";
 
 export interface AdapterRegistry {
   status?: StatusAdapter;
@@ -87,22 +89,9 @@ export const createBridgeRuntime = async (env: NodeJS.ProcessEnv): Promise<Bridg
   const auditLog = new FileAuditLog(config.auditLogPath);
   const cleanups: Array<() => Promise<void>> = [];
 
-  const idempotencyStore =
-    config.storeBackend === "redis"
-      ? undefined
-      : new InMemoryIdempotencyStore();
-  const replayStore =
-    config.storeBackend === "redis"
-      ? undefined
-      : new InMemoryReplayStore();
-  const rateLimiter =
-    config.storeBackend === "redis"
-      ? undefined
-      : new SlidingWindowRateLimiter(config.rateLimitPerMinute);
-
-  let resolvedIdempotencyStore = idempotencyStore;
-  let resolvedReplayStore = replayStore;
-  let resolvedRateLimiter = rateLimiter;
+  let resolvedIdempotencyStore: IdempotencyStore;
+  let resolvedReplayStore: ReplayStore;
+  let resolvedRateLimiter: RateLimiter;
 
   if (config.storeBackend === "redis") {
     const redis = createClient({
@@ -116,21 +105,23 @@ export const createBridgeRuntime = async (env: NodeJS.ProcessEnv): Promise<Bridg
       }
     });
 
+    const kvClient = redis as unknown as RedisKvClient;
+
     resolvedIdempotencyStore = new RedisIdempotencyStore(
-      redis,
+      kvClient,
       config.redisKeyPrefix,
       config.idempotencyTtlMs,
     );
-    resolvedReplayStore = new RedisReplayStore(redis, config.redisKeyPrefix);
+    resolvedReplayStore = new RedisReplayStore(kvClient, config.redisKeyPrefix);
     resolvedRateLimiter = new RedisSlidingWindowRateLimiter(
-      redis,
+      kvClient,
       config.redisKeyPrefix,
       config.rateLimitPerMinute,
     );
-  }
-
-  if (!resolvedIdempotencyStore || !resolvedReplayStore || !resolvedRateLimiter) {
-    throw new Error("failed to initialize persistence layer");
+  } else {
+    resolvedIdempotencyStore = new InMemoryIdempotencyStore();
+    resolvedReplayStore = new InMemoryReplayStore();
+    resolvedRateLimiter = new SlidingWindowRateLimiter(config.rateLimitPerMinute);
   }
 
   const engine = new BridgeEngine(
