@@ -106,7 +106,7 @@ export class StatusWakuClient extends EventEmitter {
     }
 
     const sdk = await this.sdkModuleLoader();
-    const createNode = pickFunction<(options: Record<string, unknown>) => Promise<WakuNode>>(sdk, [
+    const createNode = pickFunction<(...args: unknown[]) => Promise<WakuNode>>(sdk, [
       "createLightNode",
       "createRelayNode",
     ]);
@@ -114,7 +114,7 @@ export class StatusWakuClient extends EventEmitter {
     const node = await createNode({
       defaultBootstrap: this.options.bootstrapNodes.length === 0,
       bootstrapPeers: this.options.bootstrapNodes,
-    });
+    } as unknown);
 
     await this.callNode(node, "start");
     await this.waitForPeers(sdk, node);
