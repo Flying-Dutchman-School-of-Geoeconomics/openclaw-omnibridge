@@ -1,5 +1,5 @@
 ---- MODULE MC_BRIDGE_INVARIANTS ----
-EXTENDS Naturals, Sequences, FiniteSets
+EXTENDS Naturals, Sequences, FiniteSets, TLC
 
 \* State variables - must be declared here for substitution
 VARIABLES pending, verified, processed, usedNonces, forwarded
