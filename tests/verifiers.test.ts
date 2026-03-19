@@ -79,3 +79,22 @@ test("verifyStatusEnvelope rejects topic mismatch", () => {
 
   assert.equal(result.authenticated, false);
 });
+
+test("verifyStatusEnvelope accepts local bridge-shim attestation with signature proof", () => {
+  const result = verifyStatusEnvelope({
+    senderId: "0xabc",
+    expectedTopic: "/openclaw/1/chat/proto",
+    providedTopic: "/openclaw/1/chat/proto",
+    expectedCommunityId: "0xcommunity",
+    providedCommunityId: "0xcommunity",
+    expectedChatId: "0xchat",
+    providedChatId: "0xchat",
+    transportAttestation: "local-bridge-shim",
+    signatureVerifiedByWaku: false,
+    signatureProof: "proof",
+    allowedSenders: ["0xabc"],
+  });
+
+  assert.equal(result.authenticated, true);
+  assert.equal(result.mechanism, "status-bridge-shim-local-signed-payload");
+});
