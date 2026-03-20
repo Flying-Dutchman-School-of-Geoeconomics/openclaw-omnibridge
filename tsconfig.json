@@ -15,5 +15,4 @@
     "types": ["node"]
   },
   "include": ["src", "tests"],
-  "exclude": ["src/ingress"]
 }
