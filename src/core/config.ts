@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { ChannelKind, BridgePolicy } from "./types.js";
 
 export type StoreBackend = "memory" | "redis";
@@ -10,10 +12,15 @@ export interface RuntimeConfig {
   idempotencyTtlMs: number;
   rateLimitPerMinute: number;
   auditLogPath: string;
+  policyPath: string;
   storeBackend: StoreBackend;
   redisUrl: string;
   redisKeyPrefix: string;
   bridgeToggles: Partial<Record<ChannelKind, boolean>>;
+  statusShimLocal: {
+    enabled: boolean;
+    sharedSecret: string;
+  };
   status: {
     enabled: boolean;
     bootstrapNodes: string[];
@@ -160,6 +167,22 @@ const defaultPolicy = (): BridgePolicy => ({
   ],
 });
 
+const loadPolicyFromPath = (policyPath: string | undefined): BridgePolicy => {
+  if (!policyPath) {
+    return defaultPolicy();
+  }
+
+  const resolvedPath = path.resolve(policyPath);
+  const raw = readFileSync(resolvedPath, "utf8");
+  const parsed = JSON.parse(raw) as BridgePolicy;
+
+  if (!parsed?.rules || !Array.isArray(parsed.rules) || parsed.rules.length === 0) {
+    throw new Error(`Invalid policy file: ${resolvedPath}`);
+  }
+
+  return parsed;
+};
+
 export const loadConfigFromEnv = (env: NodeJS.ProcessEnv): RuntimeConfig => {
   const bridgeToggles: RuntimeConfig["bridgeToggles"] = {
     discord: asBool(env.BRIDGE_ENABLE_DISCORD, false),
@@ -179,10 +202,15 @@ export const loadConfigFromEnv = (env: NodeJS.ProcessEnv): RuntimeConfig => {
     idempotencyTtlMs: asNum(env.OPENCLAW_IDEMPOTENCY_TTL_MS, 604800000),
     rateLimitPerMinute: asNum(env.OPENCLAW_RATE_LIMIT_PER_MIN, 60),
     auditLogPath: env.OPENCLAW_AUDIT_LOG_PATH ?? "./var/audit.log",
+    policyPath: env.OPENCLAW_POLICY_PATH ?? "",
     storeBackend: asStoreBackend(env.STORE_BACKEND),
     redisUrl: env.REDIS_URL ?? "redis://127.0.0.1:6379",
     redisKeyPrefix: env.REDIS_KEY_PREFIX ?? "openclaw",
     bridgeToggles,
+    statusShimLocal: {
+      enabled: asBool(env.STATUS_SHIM_LOCAL_ENABLED, false),
+      sharedSecret: env.STATUS_SHIM_SHARED_SECRET ?? "",
+    },
     status: {
       enabled: asBool(env.STATUS_ENABLED, false),
       bootstrapNodes: csv(env.STATUS_WAKU_BOOTSTRAP_NODES),
@@ -235,7 +263,7 @@ export const loadConfigFromEnv = (env: NodeJS.ProcessEnv): RuntimeConfig => {
       allowedSenders: csv(env.EMAIL_ALLOWED_SENDERS),
       requireDkimPass: asBool(env.EMAIL_REQUIRE_DKIM_PASS, true),
     },
-    policy: defaultPolicy(),
+    policy: loadPolicyFromPath(env.OPENCLAW_POLICY_PATH),
   };
 };
 
@@ -252,6 +280,17 @@ export const validateCriticalConfig = (config: RuntimeConfig): void => {
     asRequired("STATUS_EXPECTED_TOPIC", config.status.expectedTopic);
     asRequired("STATUS_COMMUNITY_ID", config.status.communityId);
     asRequired("STATUS_CHAT_ID", config.status.chatId);
+  }
+
+  if (config.statusShimLocal.enabled) {
+    if (!config.status.enabled) {
+      throw new Error("STATUS_SHIM_LOCAL_ENABLED=true requires STATUS_ENABLED=true");
+    }
+
+    asRequired("STATUS_SHIM_SHARED_SECRET", config.statusShimLocal.sharedSecret);
+    if (config.statusShimLocal.sharedSecret.length < 32) {
+      throw new Error("STATUS_SHIM_SHARED_SECRET must be at least 32 characters");
+    }
   }
 
   if (config.whatsapp.enabled) {

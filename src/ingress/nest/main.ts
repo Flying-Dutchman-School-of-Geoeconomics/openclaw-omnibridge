@@ -20,7 +20,7 @@ const main = async (): Promise<void> => {
     bodyLimit: 1024 * 1024,
   }));
 
-  await app.register(rawBody, {
+  await app.register(rawBody as never, {
     field: "rawBody",
     global: true,
     encoding: "utf8",

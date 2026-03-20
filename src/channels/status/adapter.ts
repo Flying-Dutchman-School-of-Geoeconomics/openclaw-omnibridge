@@ -7,7 +7,9 @@ import {
   VerificationResult,
 } from "../../core/types.js";
 import { verifyStatusEnvelope } from "../../crypto/verifiers.js";
+import { verifySignedStatusPayload } from "./waku-proof.js";
 import { StatusWakuClient, StatusEnvelope } from "./waku-client.js";
+import { SignedStatusPayload } from "./waku-types.js";
 
 export interface StatusAdapterConfig {
   bootstrapNodes: string[];
@@ -63,6 +65,37 @@ export class StatusAdapter extends BaseInboundAdapter {
     await this.wakuClient.publishText(message.text);
   }
 
+  async injectSignedPayloadLocally(
+    signed: SignedStatusPayload,
+    metadata: Record<string, string> = {},
+  ): Promise<void> {
+    const verification = verifySignedStatusPayload(signed);
+    if (!verification.ok) {
+      throw new Error(`invalid local Status payload: ${verification.reason}`);
+    }
+
+    await this.simulateInbound({
+      id: signed.messageId,
+      channel: this.kind,
+      senderId: signed.senderPublicKey,
+      conversationId: signed.chatId,
+      timestampMs: signed.timestampMs,
+      nonce: signed.nonce,
+      payload: signed.payload,
+      contentType: signed.contentType,
+      headers: {
+        topic: signed.topic,
+      },
+      metadata: {
+        communityId: signed.communityId,
+        signatureVerifiedByWaku: "false",
+        signatureProof: verification.proof,
+        transportAttestation: "local-bridge-shim",
+        ...metadata,
+      },
+    });
+  }
+
   async verify(raw: RawInboundMessage): Promise<VerificationResult> {
     return verifyStatusEnvelope({
       senderId: raw.senderId,
@@ -72,6 +105,8 @@ export class StatusAdapter extends BaseInboundAdapter {
       providedCommunityId: raw.metadata.communityId ?? "",
       expectedChatId: this.config.chatId,
       providedChatId: raw.conversationId,
+      transportAttestation:
+        raw.metadata.transportAttestation === "local-bridge-shim" ? "local-bridge-shim" : "waku",
       signatureVerifiedByWaku: raw.metadata.signatureVerifiedByWaku === "true",
       signatureProof: raw.metadata.signatureProof,
       allowedSenders: this.config.allowedSenders,
@@ -81,6 +116,7 @@ export class StatusAdapter extends BaseInboundAdapter {
   async normalize(raw: RawInboundMessage, verification: VerificationResult): Promise<CanonicalMessage> {
     const command = raw.payload.startsWith("/") ? raw.payload.slice(1).split(/\s+/) : null;
     const kind: MessageKind = raw.contentType === "audio/ogg" ? "audio" : command ? "command" : "text";
+
     return {
       messageId: raw.id,
       sourceChannel: this.kind,

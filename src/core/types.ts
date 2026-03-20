@@ -84,6 +84,7 @@ export interface BridgePolicyRule {
   allowedCommands?: string[];
   maxPayloadBytes: number;
   fanoutTargets: ChannelKind[];
+  fanoutConversationOverrides?: Partial<Record<ChannelKind, string>>;
 }
 
 export interface BridgePolicy {

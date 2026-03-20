@@ -23,12 +23,15 @@ const bootstrap = async (): Promise<void> => {
 
   const server = new BridgeHttpServer({
     port: runtime.config.httpPort,
+    commonKnowledgeService: runtime.commonKnowledge,
     telegramAdapter: runtime.adapters.telegram,
     slackAdapter: runtime.adapters.slack,
     discordAdapter: runtime.adapters.discord,
     whatsappAdapter: runtime.adapters.whatsapp,
     signalAdapter: runtime.adapters.signal,
     emailAdapter: runtime.adapters.email,
+    statusLocalIngress: runtime.statusLocalIngress,
+    statusLocalIngressSharedSecret: runtime.config.statusShimLocal.sharedSecret,
   });
 
   await server.start();
