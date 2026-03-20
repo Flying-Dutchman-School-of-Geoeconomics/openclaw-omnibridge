@@ -63,7 +63,7 @@ npm install
 # 2. Build
 npm run build
 
-# 3. Run unit tests — expect 35/35 passing
+# 3. Run unit tests — expect 39/39 passing
 npm run test:unit
 
 # 4. Create your .env from the example
@@ -156,3 +156,4 @@ Example configuration files use placeholder values only. See
 | Common Knowledge text refinements (plan items 10-13) | Deferred — second pass |
 | Larger-string payload ladder tests | Future branch |
 | Full bidirectional hello (Signal → Status visible in app) | Future branch |
+

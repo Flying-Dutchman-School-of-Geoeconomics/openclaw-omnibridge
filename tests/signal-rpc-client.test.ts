@@ -15,7 +15,7 @@ test("SignalRpcClient.sendMessage targets /api/v1/rpc with JSON-RPC 2.0 shape", 
 
   try {
     const client = new SignalRpcClient("http://127.0.0.1:8081");
-    await client.sendMessage("+918077159037", "HELLO_STATUS_TO_SIGNAL");
+    await client.sendMessage("+15551234567", "HELLO_STATUS_TO_SIGNAL");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -27,7 +27,7 @@ test("SignalRpcClient.sendMessage targets /api/v1/rpc with JSON-RPC 2.0 shape", 
   assert.equal(body.method, "send");
 
   const params = body.params as Record<string, unknown>;
-  assert.deepEqual(params.recipient, ["+918077159037"]);
+  assert.deepEqual(params.recipient, ["+15551234567"]);
   assert.equal(params.message, "HELLO_STATUS_TO_SIGNAL");
 });
 
@@ -40,7 +40,7 @@ test("SignalRpcClient.sendMessage throws on non-ok response", async () => {
   try {
     const client = new SignalRpcClient("http://127.0.0.1:8081");
     await assert.rejects(
-      () => client.sendMessage("+918077159037", "HELLO"),
+      () => client.sendMessage("+15551234567", "HELLO"),
       /Signal sendMessage failed: 404/,
     );
   } finally {
