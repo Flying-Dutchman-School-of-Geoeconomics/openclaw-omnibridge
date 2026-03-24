@@ -1,9 +1,12 @@
 import { createHash } from "node:crypto";
 import { BaseInboundAdapter } from "../channels/base.js";
+import { CommonKnowledgeService } from "../common-knowledge/service.js";
+import { ExecutionPlan } from "../common-knowledge/types.js";
 import { PolicyError, SecurityError } from "./errors.js";
 import { PolicyEngine } from "./policy-engine.js";
 import {
   AuditLog,
+  BridgePolicyRule,
   CanonicalMessage,
   ChannelKind,
   IdempotencyStore,
@@ -16,10 +19,13 @@ import {
 export interface BridgeEngineOptions {
   replayTtlMs: number;
   enabledFanoutTargets: Partial<Record<ChannelKind, boolean>>;
+  bridgeSenderIdentities?: Partial<Record<ChannelKind, string>>;
+  systemReplyTtlMs?: number;
 }
 
 export class BridgeEngine {
   private readonly adapters = new Map<ChannelKind, BaseInboundAdapter>();
+  private readonly systemReplyFingerprints = new Map<string, number>();
 
   constructor(
     private readonly gateway: OpenClawGateway,
@@ -29,6 +35,7 @@ export class BridgeEngine {
     private readonly rateLimiter: RateLimiter,
     private readonly auditLog: AuditLog,
     private readonly options: BridgeEngineOptions,
+    private readonly commonKnowledge?: CommonKnowledgeService,
   ) {}
 
   registerAdapter(adapter: BaseInboundAdapter): void {
@@ -84,6 +91,18 @@ export class BridgeEngine {
     this.policyEngine.enforceSenderAllowlist(canonical, rule);
     this.policyEngine.enforceCommandAllowlist(canonical, rule);
 
+    if (this.shouldSuppressSystemReplyLoop(raw, canonical)) {
+      await this.idempotencyStore.markProcessed(raw.id);
+      await this.auditLog.record({
+        type: "rejected",
+        channel: source,
+        messageId: raw.id,
+        detail: "suppressed bridge-originated reply loop",
+        timestampMs: Date.now(),
+      });
+      return;
+    }
+
     await this.gateway.ingest(canonical);
     await this.idempotencyStore.markProcessed(raw.id);
 
@@ -99,11 +118,39 @@ export class BridgeEngine {
       },
     });
 
-    await this.forward(canonical, rule.fanoutTargets);
+    const execution = this.commonKnowledge?.resolveIntent({
+      message: canonical,
+      rule,
+    }).execution ?? { outcome: "relay" as const };
+
+    await this.execute(canonical, rule, execution);
   }
 
-  private async forward(message: CanonicalMessage, targets: ChannelKind[]): Promise<void> {
-    const outbound = this.toOutbound(message);
+  private async execute(message: CanonicalMessage, rule: BridgePolicyRule, execution: ExecutionPlan): Promise<void> {
+    switch (execution.outcome) {
+      case "dispatch":
+        await this.forward(message, rule, execution.dispatchTargets ?? [], execution.dispatchText);
+        return;
+      case "reply":
+      case "clarify":
+      case "reject":
+        if (execution.reply) {
+          await this.reply(execution.reply, message.messageId);
+        }
+        return;
+      case "relay":
+      default:
+        await this.forward(message, rule, rule.fanoutTargets);
+    }
+  }
+
+  private async forward(
+    message: CanonicalMessage,
+    rule: BridgePolicyRule,
+    targets: ChannelKind[],
+    outboundText?: string,
+  ): Promise<void> {
+    const outbound = this.toOutbound(message, outboundText);
 
     for (const target of targets) {
       if (target === message.sourceChannel) {
@@ -122,24 +169,61 @@ export class BridgeEngine {
       const targetMessage: OutboundMessage = {
         ...outbound,
         channel: target,
+        conversationId: rule.fanoutConversationOverrides?.[target] ?? outbound.conversationId,
+        metadata: {
+          ...outbound.metadata,
+          targetConversationId: rule.fanoutConversationOverrides?.[target] ?? outbound.conversationId,
+        },
       };
 
       await adapter.send(targetMessage);
       await this.auditLog.record({
-        type: "forwarded",
-        channel: target,
-        messageId: message.messageId,
-        detail: `forwarded from ${message.sourceChannel} to ${target}`,
-        timestampMs: Date.now(),
-      });
+          type: "forwarded",
+          channel: target,
+          messageId: message.messageId,
+          detail: `forwarded from ${message.sourceChannel} to ${target}`,
+          timestampMs: Date.now(),
+          metadata: {
+            targetConversationId: targetMessage.conversationId,
+          },
+        });
     }
   }
 
-  private toOutbound(message: CanonicalMessage): OutboundMessage {
+  private async reply(plan: ExecutionPlan["reply"], sourceMessageId: string): Promise<void> {
+    if (!plan) {
+      return;
+    }
+
+    const adapter = this.adapters.get(plan.channel);
+    if (!adapter) {
+      return;
+    }
+
+    this.rememberSystemReply(plan.channel, plan.conversationId, plan.text);
+    await adapter.send({
+      channel: plan.channel,
+      conversationId: plan.conversationId,
+      text: plan.text,
+      metadata: plan.metadata,
+    });
+    await this.auditLog.record({
+      type: "forwarded",
+      channel: plan.channel,
+      messageId: sourceMessageId,
+      detail: `same-channel ${plan.metadata?.commonKnowledgeReply ? "common-knowledge " : ""}reply sent`,
+      timestampMs: Date.now(),
+      metadata: {
+        targetConversationId: plan.conversationId,
+      },
+    });
+  }
+
+  private toOutbound(message: CanonicalMessage, textOverride?: string): OutboundMessage {
     return {
       channel: message.sourceChannel,
       conversationId: message.sourceConversationId,
-      text: this.renderMessage(message),
+      text: textOverride ?? this.renderMessage(message),
       metadata: {
         sourceChannel: message.sourceChannel,
         sourceSender: message.sourceSenderId,
@@ -167,5 +251,46 @@ export class BridgeEngine {
 
   private makeReplayKey(channel: ChannelKind, senderId: string, nonce: string): string {
     return createHash("sha256").update(`${channel}:${senderId}:${nonce}`).digest("hex");
+  }
+
+  private shouldSuppressSystemReplyLoop(
+    raw: Parameters<BaseInboundAdapter["verify"]>[0],
+    canonical: CanonicalMessage,
+  ): boolean {
+    const expectedSender = this.options.bridgeSenderIdentities?.[canonical.sourceChannel];
+    if (expectedSender && raw.senderId.toLowerCase() === expectedSender.toLowerCase()) {
+      return true;
+    }
+
+    if (!canonical.text) {
+      return false;
+    }
+
+    this.evictExpiredFingerprints();
+    return this.systemReplyFingerprints.has(
+      this.makeSystemReplyFingerprint(canonical.sourceChannel, canonical.sourceConversationId, canonical.text),
+    );
+  }
+
+  private rememberSystemReply(channel: ChannelKind, conversationId: string, text: string): void {
+    this.evictExpiredFingerprints();
+    const ttlMs = this.options.systemReplyTtlMs ?? 15_000;
+    this.systemReplyFingerprints.set(
+      this.makeSystemReplyFingerprint(channel, conversationId, text),
+      Date.now() + ttlMs,
+    );
+  }
+
+  private evictExpiredFingerprints(): void {
+    const now = Date.now();
+    for (const [fingerprint, expiresAt] of this.systemReplyFingerprints.entries()) {
+      if (expiresAt <= now) {
+        this.systemReplyFingerprints.delete(fingerprint);
+      }
+    }
+  }
+
+  private makeSystemReplyFingerprint(channel: ChannelKind, conversationId: string, text: string): string {
+    return createHash("sha256").update(`${channel}:${conversationId}:${text}`).digest("hex");
   }
 }

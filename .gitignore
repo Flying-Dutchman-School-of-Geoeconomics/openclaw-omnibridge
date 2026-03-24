@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment files — NEVER commit real secrets
+.env
+.env.*
+!.env.*.example
+
+# Runtime artifacts
+var/
+*.log
+
+# Local scripts created during debugging
+hello-send.mjs
+derive-key.mjs
+decode-ids.mjs
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Local test files
+*.local.*
+
+# Real policy files — contain sensitive IDs and phone numbers
+config/policy.json
+config/policy.status-signal-hello.json

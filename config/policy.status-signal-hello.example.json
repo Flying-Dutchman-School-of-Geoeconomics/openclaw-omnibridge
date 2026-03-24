@@ -1,0 +1,25 @@
+{
+  "_comment": "OpenClaw OmniBridge — Status to Signal Hello Policy Example. Copy to config/policy.json and replace all placeholder values with your real values.",
+  "rules": [
+    {
+      "_comment": "Rule 1: Status ingress -> forward to Signal",
+      "sourceChannel": "status",
+      "requireAuthentication": true,
+      "allowedSenders": [
+        "YOUR_ED25519_PUBLIC_KEY_HERE"
+      ],
+      "maxPayloadBytes": 32768,
+      "fanoutTargets": ["signal"],
+      "fanoutConversationOverrides": {
+        "signal": "+YOUR_RECIPIENT_SIGNAL_NUMBER_HERE"
+      }
+    },
+    {
+      "_comment": "Rule 2: Signal ingress -> forward to Status (bridge-routing level proof only; native Status Desktop rendering is a separate workstream)",
+      "sourceChannel": "signal",
+      "requireAuthentication": true,
+      "maxPayloadBytes": 16384,
+      "fanoutTargets": ["status"]
+    }
+  ]
+}
