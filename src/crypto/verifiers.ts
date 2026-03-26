@@ -107,18 +107,25 @@ export interface StatusVerificationParams {
   providedCommunityId: string;
   expectedChatId: string;
   providedChatId: string;
+  transportAttestation?: "waku" | "local-bridge-shim";
   signatureVerifiedByWaku: boolean;
   signatureProof?: string;
   allowedSenders: string[];
 }
 
 export const verifyStatusEnvelope = (params: StatusVerificationParams): VerificationResult => {
-  if (!params.signatureVerifiedByWaku) {
-    return reject(`Status signature not verified for sender ${params.senderId}`);
-  }
+  const transportAttestation = params.transportAttestation ?? "waku";
 
   if (!params.signatureProof) {
     return reject("Status signature proof missing");
+  }
+
+  if (transportAttestation === "waku" && !params.signatureVerifiedByWaku) {
+    return reject(`Status signature not verified for sender ${params.senderId}`);
+  }
+
+  if (transportAttestation !== "waku" && transportAttestation !== "local-bridge-shim") {
+    return reject(`unsupported Status transport attestation: ${transportAttestation}`);
   }
 
   if (params.expectedTopic !== params.providedTopic) {
@@ -142,7 +149,10 @@ export const verifyStatusEnvelope = (params: StatusVerificationParams): Verifica
 
   return {
     authenticated: true,
-    mechanism: "waku-signed-payload",
+    mechanism:
+      transportAttestation === "local-bridge-shim"
+        ? "status-bridge-shim-local-signed-payload"
+        : "waku-signed-payload",
     confidence: "high",
   };
 };

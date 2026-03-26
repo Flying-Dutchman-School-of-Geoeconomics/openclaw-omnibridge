@@ -9,19 +9,22 @@ import { StatusAdapter } from "./channels/status/adapter.js";
 import { StatusWakuClient } from "./channels/status/waku-client.js";
 import { TelegramAdapter } from "./channels/telegram/adapter.js";
 import { WhatsAppAdapter } from "./channels/whatsapp/adapter.js";
+import { CommonKnowledgeService } from "./common-knowledge/service.js";
+import { StatusHumanIngressShim } from "./common-knowledge/status-human-ingress-shim.js";
+import { StatusLocalIngressService } from "./common-knowledge/status-local-ingress.js";
 import { FileAuditLog } from "./core/audit-log.js";
 import { loadConfigFromEnv, RuntimeConfig, validateCriticalConfig } from "./core/config.js";
 import { BridgeEngine } from "./core/bridge-engine.js";
 import { InMemoryIdempotencyStore, InMemoryReplayStore, SlidingWindowRateLimiter } from "./core/memory-stores.js";
 import { ConsoleOpenClawGateway } from "./core/openclaw-gateway.js";
 import { PolicyEngine } from "./core/policy-engine.js";
+import { IdempotencyStore, RateLimiter, ReplayStore } from "./core/types.js";
 import {
   RedisIdempotencyStore,
+  RedisKvClient,
   RedisReplayStore,
   RedisSlidingWindowRateLimiter,
-  type RedisKvClient,
 } from "./core/redis-stores.js";
-import { IdempotencyStore, RateLimiter, ReplayStore } from "./core/types.js";
 
 export interface AdapterRegistry {
   status?: StatusAdapter;
@@ -36,6 +39,9 @@ export interface AdapterRegistry {
 export interface BridgeRuntime {
   config: RuntimeConfig;
   adapters: AdapterRegistry;
+  commonKnowledge: CommonKnowledgeService;
+  statusHumanIngressShim?: StatusHumanIngressShim;
+  statusLocalIngress?: StatusLocalIngressService;
   start(): Promise<void>;
   stop(): Promise<void>;
 }
@@ -46,6 +52,9 @@ class BridgeRuntimeImpl implements BridgeRuntime {
   constructor(
     public readonly config: RuntimeConfig,
     public readonly adapters: AdapterRegistry,
+    public readonly commonKnowledge: CommonKnowledgeService,
+    public readonly statusHumanIngressShim: StatusHumanIngressShim | undefined,
+    public readonly statusLocalIngress: StatusLocalIngressService | undefined,
     private readonly engine: BridgeEngine,
     private readonly cleanups: Array<() => Promise<void>>,
   ) {}
@@ -88,6 +97,13 @@ export const createBridgeRuntime = async (env: NodeJS.ProcessEnv): Promise<Bridg
   const policy = new PolicyEngine(config.policy);
   const auditLog = new FileAuditLog(config.auditLogPath);
   const cleanups: Array<() => Promise<void>> = [];
+  const adapters: AdapterRegistry = {};
+  const commonKnowledge = new CommonKnowledgeService({
+    policy: config.policy,
+    statusPrivateKeyHex: config.status.enabled ? config.status.privateKeyHex || undefined : undefined,
+    isChannelEnabled: (channel) => Boolean(adapters[channel]),
+    isChannelHealthy: (channel) => Boolean(adapters[channel]),
+  });
 
   let resolvedIdempotencyStore: IdempotencyStore;
   let resolvedReplayStore: ReplayStore;
@@ -98,14 +114,13 @@ export const createBridgeRuntime = async (env: NodeJS.ProcessEnv): Promise<Bridg
       url: config.redisUrl,
     });
     await redis.connect();
+const kvClient = redis as unknown as RedisKvClient;
 
     cleanups.push(async () => {
       if (redis.isOpen) {
         await redis.quit();
       }
     });
-
-    const kvClient = redis as unknown as RedisKvClient;
 
     resolvedIdempotencyStore = new RedisIdempotencyStore(
       kvClient,
@@ -124,6 +139,11 @@ export const createBridgeRuntime = async (env: NodeJS.ProcessEnv): Promise<Bridg
     resolvedRateLimiter = new SlidingWindowRateLimiter(config.rateLimitPerMinute);
   }
 
+  const bridgeSenderIdentities: Partial<Record<keyof AdapterRegistry, string>> = {};
+  if (config.email.username) {
+    bridgeSenderIdentities.email = config.email.username;
+  }
+
   const engine = new BridgeEngine(
     gateway,
     policy,
@@ -134,10 +154,11 @@ export const createBridgeRuntime = async (env: NodeJS.ProcessEnv): Promise<Bridg
     {
       replayTtlMs: config.replayTtlMs,
       enabledFanoutTargets: config.bridgeToggles,
+      bridgeSenderIdentities,
+      systemReplyTtlMs: 15_000,
     },
+    commonKnowledge,
   );
-
-  const adapters: AdapterRegistry = {};
 
   if (config.status.enabled) {
     adapters.status = new StatusAdapter(
@@ -221,5 +242,29 @@ export const createBridgeRuntime = async (env: NodeJS.ProcessEnv): Promise<Bridg
     engine.registerAdapter(adapters.email);
   }
 
-  return new BridgeRuntimeImpl(config, adapters, engine, cleanups);
+  const statusHumanIngressShim =
+    adapters.status && config.status.chatId
+      ? new StatusHumanIngressShim(adapters.status, config.status.chatId)
+      : undefined;
+  const statusLocalIngress =
+    adapters.status && config.statusShimLocal.enabled
+      ? new StatusLocalIngressService({
+          statusAdapter: adapters.status,
+          privateKeyHex: config.status.privateKeyHex,
+          expectedTopic: config.status.expectedTopic,
+          communityId: config.status.communityId,
+          chatId: config.status.chatId,
+        })
+      : undefined;
+
+  return new BridgeRuntimeImpl(
+    config,
+    adapters,
+    commonKnowledge,
+    statusHumanIngressShim,
+    statusLocalIngress,
+    engine,
+    cleanups,
+  );
 };
+

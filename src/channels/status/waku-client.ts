@@ -170,7 +170,8 @@ export class StatusWakuClient extends EventEmitter {
 
     const lightPush = getField(this.node, ["lightPush"]);
     if (typeof getField(lightPush, ["send"]) === "function") {
-      await (getField(lightPush, ["send"]) as (encoder: unknown, msg: unknown) => Promise<void>)(
+      await (getField(lightPush, ["send"]) as (encoder: unknown, msg: unknown) => Promise<void>).call(
+        lightPush,
         this.encoder,
         message,
       );
@@ -207,7 +208,7 @@ export class StatusWakuClient extends EventEmitter {
     const subscribe = getField(filter, ["subscribe"]);
     if (typeof subscribe === "function") {
       try {
-        const result = await (subscribe as (...args: unknown[]) => Promise<unknown>)([decoder], onMessage);
+        const result = await (subscribe as (...args: unknown[]) => Promise<unknown>).call(filter, [decoder], onMessage);
         const unsubscribe = getField(toObject(result), ["unsubscribe"]);
         if (typeof unsubscribe === "function") {
           return () => (unsubscribe as () => Promise<void>)();
@@ -217,7 +218,7 @@ export class StatusWakuClient extends EventEmitter {
         }
         return null;
       } catch {
-        const result = await (subscribe as (...args: unknown[]) => Promise<unknown>)(decoder, onMessage);
+        const result = await (subscribe as (...args: unknown[]) => Promise<unknown>).call(filter, decoder, onMessage);
         const unsubscribe = getField(toObject(result), ["unsubscribe"]);
         if (typeof unsubscribe === "function") {
           return () => (unsubscribe as () => Promise<void>)();
@@ -387,7 +388,7 @@ export class StatusWakuClient extends EventEmitter {
     if (typeof fn !== "function") {
       throw new Error(`Waku node missing ${method}()`);
     }
-    await (fn as () => Promise<void>)();
+    await (fn as (this: unknown) => Promise<void>).call(node);
   }
 
   private async waitForPeers(sdk: Record<string, unknown>, node: WakuNode): Promise<void> {
@@ -398,7 +399,7 @@ export class StatusWakuClient extends EventEmitter {
 
     const protocols = toObject(getField(sdk, ["Protocols"]));
     const requestedProtocols: unknown[] = [];
-    for (const key of ["Filter", "LightPush", "Relay"]) {
+    for (const key of ["Filter", "LightPush"]) {
       if (key in protocols) {
         requestedProtocols.push(protocols[key]);
       }
