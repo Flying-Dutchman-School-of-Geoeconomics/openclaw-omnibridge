@@ -26,12 +26,24 @@ export interface StatusWakuClientOptions {
   communityId: string;
   chatId: string;
   expectedTopic: string;
+  healthStaleMs?: number;
   sdkModuleLoader?: () => Promise<Record<string, unknown>>;
 }
 
 export interface StatusWarningEvent {
   reason: string;
   messageId?: string;
+}
+
+export interface StatusTransportHealth {
+  connected: boolean;
+  state: "healthy" | "degraded" | "unavailable";
+  detail: string;
+  lastConnectedAtMs?: number;
+  lastHealthyAtMs?: number;
+  lastHealthyEvent?: "connect" | "publish" | "message";
+  lastWarningAtMs?: number;
+  lastWarningReason?: string;
 }
 
 type WakuNode = Record<string, unknown>;
@@ -48,6 +60,18 @@ const getField = (value: unknown, keys: string[]): unknown => {
   }
 
   return undefined;
+};
+
+const getPath = (value: unknown, path: string[]): unknown => {
+  let current: unknown = value;
+  for (const segment of path) {
+    current = getField(current, [segment]);
+    if (current == null) {
+      return undefined;
+    }
+  }
+
+  return current;
 };
 
 const toBytes = (value: unknown): Uint8Array | null => {
@@ -86,6 +110,12 @@ const pickFunction = <T extends (...args: unknown[]) => unknown>(
 
 export class StatusWakuClient extends EventEmitter {
   private connected = false;
+  private lastConnectedAtMs = 0;
+  private lastHealthyAtMs = 0;
+  private lastHealthyEvent: StatusTransportHealth["lastHealthyEvent"] | undefined;
+  private lastPeerSeenAtMs = 0;
+  private lastWarningAtMs = 0;
+  private lastWarningReason: string | undefined;
   private readonly sdkModuleLoader: () => Promise<Record<string, unknown>>;
   private readonly selfPublicKeyHex: string;
   private node: WakuNode | null = null;
@@ -100,13 +130,95 @@ export class StatusWakuClient extends EventEmitter {
       (async () => (await import("@waku/sdk")) as unknown as Record<string, unknown>);
   }
 
+  isConnected(): boolean {
+    return this.connected;
+  }
+
+  transportHealth(): StatusTransportHealth {
+    const nowMs = Date.now();
+    if (!this.connected) {
+      return {
+        connected: false,
+        state: "unavailable",
+        detail: "Waku client not connected",
+        lastConnectedAtMs: this.lastConnectedAtMs || undefined,
+        lastHealthyAtMs: this.lastHealthyAtMs || undefined,
+        lastHealthyEvent: this.lastHealthyEvent,
+        lastWarningAtMs: this.lastWarningAtMs || undefined,
+        lastWarningReason: this.lastWarningReason,
+      };
+    }
+
+    const peerCount = this.currentPeerCount();
+    if (typeof peerCount === "number" && peerCount > 0) {
+      this.lastPeerSeenAtMs = nowMs;
+    }
+
+    if (this.lastWarningAtMs > 0 && this.lastWarningAtMs >= this.lastHealthyAtMs) {
+      return {
+        connected: true,
+        state: "degraded",
+        detail: this.lastWarningReason
+          ? `recent Waku warning: ${this.lastWarningReason}`
+          : "recent Waku warning observed",
+        lastConnectedAtMs: this.lastConnectedAtMs || undefined,
+        lastHealthyAtMs: this.lastHealthyAtMs || undefined,
+        lastHealthyEvent: this.lastHealthyEvent,
+        lastWarningAtMs: this.lastWarningAtMs || undefined,
+        lastWarningReason: this.lastWarningReason,
+      };
+    }
+
+    if (typeof peerCount === "number" && peerCount === 0 && this.isTransportStale(nowMs)) {
+      return {
+        connected: true,
+        state: "degraded",
+        detail: `Waku transport stale: no live peers observed for ${nowMs - this.lastPeerSeenAtMs}ms`,
+        lastConnectedAtMs: this.lastConnectedAtMs || undefined,
+        lastHealthyAtMs: this.lastHealthyAtMs || undefined,
+        lastHealthyEvent: this.lastHealthyEvent,
+        lastWarningAtMs: this.lastWarningAtMs || undefined,
+        lastWarningReason: this.lastWarningReason,
+      };
+    }
+
+    if (peerCount == null && this.isTransportStale(nowMs)) {
+      return {
+        connected: true,
+        state: "degraded",
+        detail: `Waku transport stale: no peer or healthy activity observed for ${nowMs - this.transportFreshnessBaselineMs()}ms`,
+        lastConnectedAtMs: this.lastConnectedAtMs || undefined,
+        lastHealthyAtMs: this.lastHealthyAtMs || undefined,
+        lastHealthyEvent: this.lastHealthyEvent,
+        lastWarningAtMs: this.lastWarningAtMs || undefined,
+        lastWarningReason: this.lastWarningReason,
+      };
+    }
+
+    return {
+      connected: true,
+      state: "healthy",
+      detail:
+        typeof peerCount === "number" && peerCount > 0
+          ? `Waku client connected; ${peerCount} live peer${peerCount === 1 ? "" : "s"} observed`
+          : this.lastHealthyEvent
+            ? `Waku client connected; last healthy event ${this.lastHealthyEvent}`
+            : "Waku client connected",
+      lastConnectedAtMs: this.lastConnectedAtMs || undefined,
+      lastHealthyAtMs: this.lastHealthyAtMs || undefined,
+      lastHealthyEvent: this.lastHealthyEvent,
+      lastWarningAtMs: this.lastWarningAtMs || undefined,
+      lastWarningReason: this.lastWarningReason,
+    };
+  }
+
   async connect(): Promise<void> {
     if (this.connected) {
       return;
     }
 
     const sdk = await this.sdkModuleLoader();
-    const createNode = pickFunction<(...args: unknown[]) => Promise<WakuNode>>(sdk, [
+    const createNode = pickFunction<(options: unknown) => Promise<WakuNode>>(sdk, [
       "createLightNode",
       "createRelayNode",
     ]);
@@ -114,7 +226,7 @@ export class StatusWakuClient extends EventEmitter {
     const node = await createNode({
       defaultBootstrap: this.options.bootstrapNodes.length === 0,
       bootstrapPeers: this.options.bootstrapNodes,
-    } as unknown);
+    });
 
     await this.callNode(node, "start");
     await this.waitForPeers(sdk, node);
@@ -123,6 +235,9 @@ export class StatusWakuClient extends EventEmitter {
     this.unsubscribe = await this.subscribe(node, sdk);
     this.node = node;
     this.connected = true;
+    this.lastConnectedAtMs = Date.now();
+    this.lastPeerSeenAtMs = this.lastConnectedAtMs;
+    this.recordHealthyEvent("connect");
   }
 
   async disconnect(): Promise<void> {
@@ -168,21 +283,27 @@ export class StatusWakuClient extends EventEmitter {
       timestamp: new Date(signed.timestampMs),
     };
 
-    const lightPush = getField(this.node, ["lightPush"]);
-    if (typeof getField(lightPush, ["send"]) === "function") {
-      await (getField(lightPush, ["send"]) as (encoder: unknown, msg: unknown) => Promise<void>).call(
-        lightPush,
-        this.encoder,
-        message,
-      );
-    } else {
-      const relay = getField(this.node, ["relay"]);
-      if (typeof getField(relay, ["send"]) !== "function") {
-        throw new Error("Waku node has no supported send transport");
+    try {
+      const lightPush = getField(this.node, ["lightPush"]);
+      if (typeof getField(lightPush, ["send"]) === "function") {
+        await (getField(lightPush, ["send"]) as (encoder: unknown, msg: unknown) => Promise<void>)(
+          this.encoder,
+          message,
+        );
+      } else {
+        const relay = getField(this.node, ["relay"]);
+        if (typeof getField(relay, ["send"]) !== "function") {
+          throw new Error("Waku node has no supported send transport");
+        }
+        await (getField(relay, ["send"]) as (encoder: unknown, msg: unknown) => Promise<void>)(this.encoder, message);
       }
-      await (getField(relay, ["send"]) as (encoder: unknown, msg: unknown) => Promise<void>)(this.encoder, message);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.emitWarning(`publish failed: ${detail}`, signed.messageId);
+      throw error;
     }
 
+    this.recordHealthyEvent("publish");
     this.emit("published", {
       messageId: signed.messageId,
       chatId: signed.chatId,
@@ -192,6 +313,7 @@ export class StatusWakuClient extends EventEmitter {
   }
 
   emitIncoming(envelope: StatusEnvelope): void {
+    this.recordHealthyEvent("message");
     this.emit("message", envelope);
   }
 
@@ -285,6 +407,7 @@ export class StatusWakuClient extends EventEmitter {
       return;
     }
 
+    this.recordHealthyEvent("message");
     this.emit("message", {
       id: parsed.messageId,
       senderPublicKey: parsed.senderPublicKey,
@@ -377,19 +500,29 @@ export class StatusWakuClient extends EventEmitter {
   }
 
   private emitWarning(reason: string, messageId?: string): void {
+    this.lastWarningAtMs = Date.now();
+    this.lastWarningReason = reason;
     this.emit("warning", {
       reason,
       messageId,
     } as StatusWarningEvent);
   }
 
-  private async callNode(node: WakuNode, method: "start" | "stop"): Promise<void> {
-    const fn = getField(node, [method]);
-    if (typeof fn !== "function") {
-      throw new Error(`Waku node missing ${method}()`);
+  private recordHealthyEvent(event: NonNullable<StatusTransportHealth["lastHealthyEvent"]>): void {
+    this.lastHealthyAtMs = Date.now();
+    this.lastHealthyEvent = event;
+    if (this.lastWarningAtMs <= this.lastHealthyAtMs) {
+      this.lastWarningReason = undefined;
     }
-    await (fn as (this: unknown) => Promise<void>).call(node);
   }
+
+  private async callNode(node: WakuNode, method: "start" | "stop"): Promise<void> {
+  const fn = getField(node, [method]);
+  if (typeof fn !== "function") {
+    throw new Error(`Waku node missing ${method}()`);
+  }
+  await (fn as () => Promise<void>).call(node);
+}
 
   private async waitForPeers(sdk: Record<string, unknown>, node: WakuNode): Promise<void> {
     const waitForRemotePeer = getField(sdk, ["waitForRemotePeer"]);
@@ -406,5 +539,102 @@ export class StatusWakuClient extends EventEmitter {
     }
 
     await (waitForRemotePeer as (n: unknown, p?: unknown[]) => Promise<void>)(node, requestedProtocols);
+  }
+
+  private currentPeerCount(): number | null {
+    if (!this.node) {
+      return null;
+    }
+
+    const directConnectionCount = this.resolveCount(this.node, [], [["getConnections"]]);
+    if (directConnectionCount != null) {
+      return directConnectionCount;
+    }
+
+    const libp2p = getPath(this.node, ["libp2p"]);
+    const peerCount = this.resolveCount(libp2p, [], [["getConnections"]]);
+    if (peerCount != null) {
+      return peerCount;
+    }
+
+    const connectionManagerCount = this.resolveCount(getPath(this.node, ["libp2p", "connectionManager"]), [], [["getConnections"]]);
+    if (connectionManagerCount != null) {
+      return connectionManagerCount;
+    }
+
+    const peerStoreCount = this.resolveCount(getPath(this.node, ["libp2p", "peerStore"]), [["peers"]], []);
+    if (peerStoreCount != null) {
+      return peerStoreCount;
+    }
+
+    return null;
+  }
+
+  private resolveCount(
+    source: unknown,
+    fieldPaths: string[][],
+    methodPaths: string[][],
+  ): number | null {
+    const object = toObject(source);
+
+    for (const fieldPath of fieldPaths) {
+      const count = this.coerceCount(getField(object, fieldPath));
+      if (count != null) {
+        return count;
+      }
+    }
+
+    for (const methodPath of methodPaths) {
+      const candidate = getField(object, methodPath);
+      if (typeof candidate !== "function") {
+        continue;
+      }
+
+      try {
+        const value = (candidate as (...args: unknown[]) => unknown).call(object);
+        const count = this.coerceCount(value);
+        if (count != null) {
+          return count;
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    return null;
+  }
+
+  private coerceCount(value: unknown): number | null {
+    if (Array.isArray(value)) {
+      return value.length;
+    }
+
+    if (value instanceof Map || value instanceof Set) {
+      return value.size;
+    }
+
+    const object = toObject(value);
+    if (typeof object.size === "number") {
+      return object.size;
+    }
+
+    if (typeof object.length === "number") {
+      return object.length;
+    }
+
+    return null;
+  }
+
+  private transportFreshnessBaselineMs(): number {
+    return Math.max(this.lastPeerSeenAtMs, this.lastHealthyAtMs, this.lastConnectedAtMs);
+  }
+
+  private isTransportStale(nowMs: number): boolean {
+    const baselineMs = this.transportFreshnessBaselineMs();
+    if (baselineMs === 0) {
+      return false;
+    }
+
+    return nowMs - baselineMs > (this.options.healthStaleMs ?? 300000);
   }
 }

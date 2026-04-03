@@ -143,7 +143,7 @@ export class CommonKnowledgeService {
         destinationKind: profile.destinationKind,
         securityPosture: profile.securityPosture,
         aliases: profile.aliases,
-        reason: active ? undefined : `${profile.englishName} is enabled but not healthy.`,
+        reason: active ? undefined : this.channelHealthReason(channel, `${profile.englishName} is enabled but not healthy.`),
       });
     }
 
@@ -487,11 +487,11 @@ export class CommonKnowledgeService {
     }
 
     if (!this.isChannelActive(source)) {
-      return `${this.channelProfiles[source].englishName} is degraded`;
+      return this.channelHealthReason(source, `${this.channelProfiles[source].englishName} is degraded`);
     }
 
     if (!this.isChannelActive(target)) {
-      return `${this.channelProfiles[target].englishName} is degraded`;
+      return this.channelHealthReason(target, `${this.channelProfiles[target].englishName} is degraded`);
     }
 
     return "route unavailable";
@@ -605,6 +605,10 @@ export class CommonKnowledgeService {
     }
 
     return this.options.isChannelHealthy ? this.options.isChannelHealthy(channel) : true;
+  }
+
+  private channelHealthReason(channel: ChannelKind, fallback: string): string {
+    return this.options.channelHealthReason?.(channel) ?? fallback;
   }
 
   private mergeProfiles(

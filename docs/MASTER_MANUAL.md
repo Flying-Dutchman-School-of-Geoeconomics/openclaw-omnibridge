@@ -63,3 +63,5 @@ To maintain Status parity or better, releases must not pass unless:
 3. Formal model checks green.
 4. Secrets rotation plan updated.
 5. Runbook updated for any protocol changes.
+6. `GET /healthz` and `GET /readyz` validated on the primary runtime.
+7. `/offers` and `/offers.txt` reviewed for truthful dependency-aware route state.

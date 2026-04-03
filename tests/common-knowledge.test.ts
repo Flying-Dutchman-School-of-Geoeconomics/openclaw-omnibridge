@@ -36,6 +36,7 @@ test("common knowledge curation signs manifests and degrades unavailable routes"
     statusPrivateKeyHex: PRIVATE_KEY_HEX,
     isChannelEnabled: (channel) => channel === "status" || channel === "signal",
     isChannelHealthy: (channel) => channel === "status",
+    channelHealthReason: (channel) => (channel === "signal" ? "Signal RPC unavailable" : undefined),
   });
 
   const manifest = service.createOfferManifest();
@@ -47,6 +48,8 @@ test("common knowledge curation signs manifests and degrades unavailable routes"
   assert.equal(statusSurface?.state, "active");
   assert.equal(signalSurface?.state, "degraded");
   assert.equal(degradedRoute?.state, "degraded");
+  assert.equal(signalSurface?.reason, "Signal RPC unavailable");
+  assert.equal(degradedRoute?.reason, "Signal RPC unavailable");
   assert.equal(manifest.offers.some((offer) => offer.offerId === "email.surface"), false);
 
   const rendered = service.renderOffersText(manifest);

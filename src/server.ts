@@ -10,6 +10,7 @@ import { WhatsAppAdapter } from "./channels/whatsapp/adapter.js";
 import { safeEqualUtf8 } from "./crypto/timing-safe.js";
 import { CommonKnowledgeService } from "./common-knowledge/service.js";
 import { StatusLocalIngressService } from "./common-knowledge/status-local-ingress.js";
+import { RuntimeHealthReporter } from "./reliability/types.js";
 
 export interface BridgeHttpServerOptions {
   port: number;
@@ -20,8 +21,9 @@ export interface BridgeHttpServerOptions {
   whatsappAdapter?: WhatsAppAdapter;
   signalAdapter?: SignalAdapter;
   emailAdapter?: EmailAdapter;
-  statusLocalIngress?: { injectHumanText(text: string): Promise<{ messageId: string }> };
+  statusLocalIngress?: StatusLocalIngressService;
   statusLocalIngressSharedSecret?: string;
+  healthReporter?: RuntimeHealthReporter;
 }
 
 const readBody = async (req: IncomingMessage): Promise<string> => {
@@ -125,6 +127,26 @@ export class BridgeHttpServer {
 
     const url = new URL(req.url, `http://localhost:${this.options.port}`);
     const path = url.pathname;
+
+    if (req.method === "GET" && path === "/healthz") {
+      writeJson(res, 200, this.options.healthReporter?.healthz() ?? { ok: true });
+      return;
+    }
+
+    if (req.method === "GET" && path === "/readyz") {
+      if (!this.options.healthReporter) {
+        writeJson(res, 503, {
+          ok: false,
+          ready: false,
+          reason: "health_reporter_unavailable",
+        });
+        return;
+      }
+
+      const snapshot = this.options.healthReporter.readyz();
+      writeJson(res, snapshot.ready ? 200 : 503, snapshot);
+      return;
+    }
 
     if (req.method === "GET" && path === "/offers") {
       if (!this.options.commonKnowledgeService) {

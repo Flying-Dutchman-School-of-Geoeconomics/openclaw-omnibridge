@@ -14,12 +14,14 @@ const CHAT = "0xchat";
 interface FakeSdkHarness {
   sent: Array<Record<string, unknown>>;
   emitInbound(message: Record<string, unknown>): void;
+  setPeerCount(count: number): void;
   sdkModule: Record<string, unknown>;
 }
 
 const createFakeSdkHarness = (): FakeSdkHarness => {
   let subscriber: ((message: unknown) => void) | null = null;
   const sent: Array<Record<string, unknown>> = [];
+  let peerCount = 1;
 
   const node = {
     async start() {
@@ -41,12 +43,20 @@ const createFakeSdkHarness = (): FakeSdkHarness => {
         sent.push(message);
       },
     },
+    libp2p: {
+      getConnections() {
+        return Array.from({ length: peerCount }, () => ({}));
+      },
+    },
   };
 
   return {
     sent,
     emitInbound(message: Record<string, unknown>) {
       subscriber?.(message);
+    },
+    setPeerCount(count: number) {
+      peerCount = count;
     },
     sdkModule: {
       async createLightNode() {
@@ -177,4 +187,90 @@ test("status waku client publishes signed payloads", async () => {
   assert.equal(typeof payload.signature, "string");
 
   await client.disconnect();
+});
+
+test("status waku client degrades after a warning until a later healthy event", async () => {
+  const harness = createFakeSdkHarness();
+  const client = new StatusWakuClient({
+    bootstrapNodes: [],
+    privateKeyHex: PRIVATE_KEY_HEX,
+    communityId: COMMUNITY,
+    chatId: CHAT,
+    expectedTopic: TOPIC,
+    sdkModuleLoader: async () => harness.sdkModule,
+  });
+
+  await client.connect();
+  assert.equal(client.transportHealth().state, "healthy");
+
+  harness.emitInbound({
+    payload: new TextEncoder().encode("{not-json"),
+  });
+
+  const degraded = client.transportHealth();
+  assert.equal(degraded.state, "degraded");
+  assert.match(degraded.detail, /recent Waku warning: malformed payload JSON/);
+  assert.equal(degraded.lastWarningReason, "malformed payload JSON");
+
+  const senderPublicKey = deriveStatusPublicKeyHex(PRIVATE_KEY_HEX);
+  const signed = signStatusPayload(
+    {
+      senderPublicKey,
+      communityId: COMMUNITY,
+      chatId: CHAT,
+      topic: TOPIC,
+      contentType: "text/plain",
+      payload: "recovered",
+    },
+    PRIVATE_KEY_HEX,
+  );
+
+  harness.emitInbound({
+    payload: new TextEncoder().encode(JSON.stringify(signed)),
+  });
+
+  const recovered = client.transportHealth();
+  assert.equal(recovered.state, "healthy");
+  assert.equal(recovered.lastHealthyEvent, "message");
+
+  await client.disconnect();
+});
+
+test("status waku client degrades stale transports after silent peer loss", async () => {
+  const realDateNow = Date.now;
+  let nowMs = 1_000;
+  Date.now = () => nowMs;
+
+  const harness = createFakeSdkHarness();
+  const client = new StatusWakuClient({
+    bootstrapNodes: [],
+    privateKeyHex: PRIVATE_KEY_HEX,
+    communityId: COMMUNITY,
+    chatId: CHAT,
+    expectedTopic: TOPIC,
+    healthStaleMs: 1_000,
+    sdkModuleLoader: async () => harness.sdkModule,
+  });
+
+  try {
+    await client.connect();
+    assert.equal(client.transportHealth().state, "healthy");
+
+    harness.setPeerCount(0);
+    nowMs = 2_500;
+
+    const degraded = client.transportHealth();
+    assert.equal(degraded.state, "degraded");
+    assert.match(degraded.detail, /no live peers observed/);
+
+    harness.setPeerCount(1);
+    nowMs = 2_600;
+
+    const recovered = client.transportHealth();
+    assert.equal(recovered.state, "healthy");
+    assert.match(recovered.detail, /live peer/);
+  } finally {
+    Date.now = realDateNow;
+    await client.disconnect();
+  }
 });

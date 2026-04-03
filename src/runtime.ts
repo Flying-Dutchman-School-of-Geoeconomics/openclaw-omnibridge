@@ -1,4 +1,5 @@
-import { mkdir } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { createClient } from "redis";
 import { DiscordAdapter } from "./channels/discord/adapter.js";
@@ -25,6 +26,8 @@ import {
   RedisReplayStore,
   RedisSlidingWindowRateLimiter,
 } from "./core/redis-stores.js";
+import { RuntimeHealthMonitor } from "./reliability/runtime-health.js";
+import { RuntimeHealthReporter } from "./reliability/types.js";
 
 export interface AdapterRegistry {
   status?: StatusAdapter;
@@ -40,11 +43,14 @@ export interface BridgeRuntime {
   config: RuntimeConfig;
   adapters: AdapterRegistry;
   commonKnowledge: CommonKnowledgeService;
+  health: RuntimeHealthReporter;
   statusHumanIngressShim?: StatusHumanIngressShim;
   statusLocalIngress?: StatusLocalIngressService;
   start(): Promise<void>;
   stop(): Promise<void>;
 }
+
+type RedisClient = ReturnType<typeof createClient>;
 
 class BridgeRuntimeImpl implements BridgeRuntime {
   private started = false;
@@ -53,6 +59,7 @@ class BridgeRuntimeImpl implements BridgeRuntime {
     public readonly config: RuntimeConfig,
     public readonly adapters: AdapterRegistry,
     public readonly commonKnowledge: CommonKnowledgeService,
+    public readonly health: RuntimeHealthReporter,
     public readonly statusHumanIngressShim: StatusHumanIngressShim | undefined,
     public readonly statusLocalIngress: StatusLocalIngressService | undefined,
     private readonly engine: BridgeEngine,
@@ -65,6 +72,7 @@ class BridgeRuntimeImpl implements BridgeRuntime {
     }
 
     await this.engine.start();
+    await this.health.start();
     this.started = true;
   }
 
@@ -73,6 +81,7 @@ class BridgeRuntimeImpl implements BridgeRuntime {
       return;
     }
 
+    await this.health.stop();
     await this.engine.stop();
 
     for (const cleanup of this.cleanups) {
@@ -87,6 +96,166 @@ const ensureAuditDir = async (auditLogPath: string): Promise<void> => {
   await mkdir(dir, { recursive: true });
 };
 
+const probeWritableAuditPath = async (auditLogPath: string): Promise<{ state: "healthy" | "unavailable"; detail: string }> => {
+  const dir = path.dirname(auditLogPath);
+  await access(dir, constants.W_OK);
+
+  try {
+    await access(auditLogPath, constants.W_OK);
+  } catch (error) {
+    const errno = error as NodeJS.ErrnoException;
+    if (errno.code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  return {
+    state: "healthy",
+    detail: "audit path writable",
+  };
+};
+
+const probePolicyPath = async (policyPath: string): Promise<{ state: "healthy"; detail: string }> => {
+  if (!policyPath) {
+    return {
+      state: "healthy",
+      detail: "default policy loaded",
+    };
+  }
+
+  await access(policyPath, constants.R_OK);
+  return {
+    state: "healthy",
+    detail: "policy path readable",
+  };
+};
+
+const createHealthMonitor = (
+  config: RuntimeConfig,
+  adapters: AdapterRegistry,
+  redisClientRef: { current: RedisClient | null },
+): RuntimeHealthReporter => {
+  const sharedDependencies = ["bootstrap.policy", "filesystem.audit"];
+  if (config.storeBackend === "redis") {
+    sharedDependencies.push("storage.redis");
+  }
+
+  return new RuntimeHealthMonitor({
+    channelDependencies: {
+      status: config.status.enabled ? [...sharedDependencies, "channel.status.waku"] : [],
+      signal: config.signal.enabled ? [...sharedDependencies, "channel.signal.rpc"] : [],
+      telegram: config.telegram.enabled ? [...sharedDependencies] : [],
+      whatsapp: config.whatsapp.enabled ? [...sharedDependencies] : [],
+      discord: config.discord.enabled ? [...sharedDependencies] : [],
+      slack: config.slack.enabled ? [...sharedDependencies] : [],
+      email: config.email.enabled ? [...sharedDependencies] : [],
+    },
+    probes: [
+      {
+        id: "bootstrap.policy",
+        label: "policy bootstrap",
+        run: async () => probePolicyPath(config.policyPath),
+      },
+      {
+        id: "filesystem.audit",
+        label: "audit filesystem",
+        run: async () => probeWritableAuditPath(config.auditLogPath),
+      },
+      {
+        id: "storage.redis",
+        label: "Redis store",
+        required: config.storeBackend === "redis",
+        run: async () => {
+          if (config.storeBackend !== "redis") {
+            return {
+              state: "healthy" as const,
+              detail: "in-memory store backend",
+            };
+          }
+
+          const redisClient = redisClientRef.current;
+          if (!redisClient?.isOpen) {
+            return {
+              state: "unavailable" as const,
+              detail: "redis client not connected",
+            };
+          }
+
+          await redisClient.ping();
+          return {
+            state: "healthy" as const,
+            detail: "redis responded to PING",
+          };
+        },
+      },
+      {
+        id: "channel.signal.rpc",
+        label: "Signal RPC",
+        channel: "signal",
+        required: config.signal.enabled,
+        run: async () => {
+          if (!config.signal.enabled) {
+            return {
+              state: "healthy" as const,
+              detail: "Signal channel disabled",
+            };
+          }
+
+          if (!config.signal.rpcUrl) {
+            return {
+              state: "unavailable" as const,
+              detail: "SIGNAL_RPC_URL missing",
+            };
+          }
+
+          if (!adapters.signal) {
+            return {
+              state: "unavailable" as const,
+              detail: "Signal adapter not initialized",
+            };
+          }
+
+          return adapters.signal.probeDeliverySurface();
+        },
+      },
+      {
+        id: "channel.status.waku",
+        label: "Status Waku",
+        channel: "status",
+        required: config.status.enabled,
+        run: async () => {
+          if (!config.status.enabled) {
+            return {
+              state: "healthy" as const,
+              detail: "Status channel disabled",
+            };
+          }
+
+          if (!config.status.bootstrapNodes.length) {
+            return {
+              state: "unavailable" as const,
+              detail: "STATUS_WAKU_BOOTSTRAP_NODES missing",
+            };
+          }
+
+          if (!adapters.status) {
+            return {
+              state: "unavailable" as const,
+              detail: "Status adapter not initialized",
+            };
+          }
+
+          const transport = adapters.status.probeTransportHealth();
+          return {
+            state: transport.state,
+            detail: transport.detail,
+          };
+        },
+      },
+    ],
+  });
+};
+
 export const createBridgeRuntime = async (env: NodeJS.ProcessEnv): Promise<BridgeRuntime> => {
   const config = loadConfigFromEnv(env);
   validateCriticalConfig(config);
@@ -98,11 +267,14 @@ export const createBridgeRuntime = async (env: NodeJS.ProcessEnv): Promise<Bridg
   const auditLog = new FileAuditLog(config.auditLogPath);
   const cleanups: Array<() => Promise<void>> = [];
   const adapters: AdapterRegistry = {};
+  const redisClientRef: { current: RedisClient | null } = { current: null };
+  const health = createHealthMonitor(config, adapters, redisClientRef);
   const commonKnowledge = new CommonKnowledgeService({
     policy: config.policy,
     statusPrivateKeyHex: config.status.enabled ? config.status.privateKeyHex || undefined : undefined,
     isChannelEnabled: (channel) => Boolean(adapters[channel]),
-    isChannelHealthy: (channel) => Boolean(adapters[channel]),
+    isChannelHealthy: (channel) => Boolean(adapters[channel]) && health.isChannelHealthy(channel),
+    channelHealthReason: (channel) => health.channelReason(channel),
   });
 
   let resolvedIdempotencyStore: IdempotencyStore;
@@ -114,8 +286,8 @@ export const createBridgeRuntime = async (env: NodeJS.ProcessEnv): Promise<Bridg
       url: config.redisUrl,
     });
     await redis.connect();
-const kvClient = redis as unknown as RedisKvClient;
-
+    redisClientRef.current = redis;
+    const kvClient = redis as unknown as RedisKvClient;
     cleanups.push(async () => {
       if (redis.isOpen) {
         await redis.quit();
@@ -176,6 +348,7 @@ const kvClient = redis as unknown as RedisKvClient;
         communityId: config.status.communityId,
         chatId: config.status.chatId,
         expectedTopic: config.status.expectedTopic,
+        healthStaleMs: config.status.healthStaleMs,
       }),
     );
     engine.registerAdapter(adapters.status);
@@ -261,10 +434,10 @@ const kvClient = redis as unknown as RedisKvClient;
     config,
     adapters,
     commonKnowledge,
+    health,
     statusHumanIngressShim,
     statusLocalIngress,
     engine,
     cleanups,
   );
 };
-

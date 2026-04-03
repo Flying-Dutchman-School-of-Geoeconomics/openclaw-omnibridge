@@ -96,6 +96,7 @@ export interface CommonKnowledgeServiceOptions {
   statusPrivateKeyHex?: string;
   isChannelEnabled: (channel: ChannelKind) => boolean;
   isChannelHealthy?: (channel: ChannelKind) => boolean;
+  channelHealthReason?: (channel: ChannelKind) => string | undefined;
   channelProfiles?: Partial<Record<ChannelKind, Partial<ChannelSurfaceProfile>>>;
 }
 
