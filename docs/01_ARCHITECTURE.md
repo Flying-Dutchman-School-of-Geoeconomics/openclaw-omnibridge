@@ -18,6 +18,25 @@
 - `src/core/memory-stores.ts`
 - `src/crypto/verifiers.ts`
 - `src/channels/*/adapter.ts`
+- `src/reliability/runtime-health.ts`
+
+## Reliability Surfaces
+
+OpenClaw OmniBridge now distinguishes several different operational truths:
+
+1. **Process liveness**
+   - Exposed via `GET /healthz`
+   - Means the primary runtime is alive and serving
+
+2. **Dependency-aware readiness**
+   - Exposed via `GET /readyz`
+   - Means required dependencies for active channels are currently healthy enough for truthful traffic handling
+
+3. **Route truth**
+   - Exposed via `/offers` and `/offers.txt`
+   - Means a route is only active when both source and target dependency conditions are healthy enough
+
+This matters because route truth and final-delivery truth are not identical. A bridge can authenticate, normalize, and forward correctly while a downstream dependency remains unavailable. OmniBridge therefore now treats dependency health as a first-class architectural concern rather than inferring it from adapter existence alone.
 
 ## Security Layers
 

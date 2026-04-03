@@ -8,7 +8,7 @@ import {
 } from "../../core/types.js";
 import { verifyStatusEnvelope } from "../../crypto/verifiers.js";
 import { verifySignedStatusPayload } from "./waku-proof.js";
-import { StatusWakuClient, StatusEnvelope } from "./waku-client.js";
+import { StatusTransportHealth, StatusWakuClient, StatusEnvelope } from "./waku-client.js";
 import { SignedStatusPayload } from "./waku-types.js";
 
 export interface StatusAdapterConfig {
@@ -63,6 +63,14 @@ export class StatusAdapter extends BaseInboundAdapter {
 
   async send(message: OutboundMessage): Promise<void> {
     await this.wakuClient.publishText(message.text);
+  }
+
+  isConnected(): boolean {
+    return this.wakuClient.isConnected();
+  }
+
+  probeTransportHealth(): StatusTransportHealth {
+    return this.wakuClient.transportHealth();
   }
 
   async injectSignedPayloadLocally(

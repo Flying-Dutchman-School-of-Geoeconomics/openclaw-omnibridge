@@ -46,6 +46,10 @@ export class SignalAdapter extends BaseInboundAdapter {
     await this.client.sendMessage(message.conversationId, message.text);
   }
 
+  async probeDeliverySurface(): Promise<{ state: "healthy" | "degraded" | "unavailable"; detail: string }> {
+    return this.client.probeSendSurface();
+  }
+
   async verify(raw: RawInboundMessage): Promise<VerificationResult> {
     return verifySignalTrustBoundary(this.config.trustedPeers, raw.senderId);
   }
@@ -53,6 +57,7 @@ export class SignalAdapter extends BaseInboundAdapter {
   async normalize(raw: RawInboundMessage, verification: VerificationResult): Promise<CanonicalMessage> {
     const command = raw.payload.startsWith("/") ? raw.payload.slice(1).split(/\s+/) : null;
     const kind: MessageKind = command ? "command" : "text";
+
     return {
       messageId: raw.id,
       sourceChannel: this.kind,

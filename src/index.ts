@@ -23,6 +23,7 @@ const bootstrap = async (): Promise<void> => {
 
   const server = new BridgeHttpServer({
     port: runtime.config.httpPort,
+    healthReporter: runtime.health,
     commonKnowledgeService: runtime.commonKnowledge,
     telegramAdapter: runtime.adapters.telegram,
     slackAdapter: runtime.adapters.slack,

@@ -29,6 +29,7 @@ export interface RuntimeConfig {
     communityId: string;
     chatId: string;
     allowedSenders: string[];
+    healthStaleMs: number;
   };
   whatsapp: {
     enabled: boolean;
@@ -219,6 +220,7 @@ export const loadConfigFromEnv = (env: NodeJS.ProcessEnv): RuntimeConfig => {
       communityId: env.STATUS_COMMUNITY_ID ?? "",
       chatId: env.STATUS_CHAT_ID ?? "",
       allowedSenders: csv(env.STATUS_ALLOWED_SENDERS),
+      healthStaleMs: asNum(env.STATUS_WAKU_HEALTH_STALE_MS, 300000),
     },
     whatsapp: {
       enabled: asBool(env.WHATSAPP_ENABLED, false),
